@@ -1,0 +1,5 @@
+pandas>=1.5.0            # leitura e escrita de Excel
+openpyxl>=3.0.10         # engine do pandas para .xlsx
+selenium>=4.11.2         # automação do navegador
+pillow>=9.5.0            # manipulação de imagens (Tkinter)
+webdriver-manager>=3.8.5 # gerencia versões do ChromeDriver automaticamente

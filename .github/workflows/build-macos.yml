@@ -30,7 +30,7 @@ jobs:
             --onefile \
             --windowed \
             --name CASDbot \
-            --icon paper-plane.ico
+            --icon paper-plane.ico \
             CASDbot.py
 
       - name: Publicar artefato

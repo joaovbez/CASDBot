@@ -16,9 +16,14 @@ jobs:
         with:
           python-version: '3.12.1'
 
+      - name: Instalar dependências
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          
       - name: Instalar PyInstaller
         run: pip install pyinstaller
-
+      
       - name: Gerar executável
         run: |
           pyinstaller \
@@ -26,7 +31,7 @@ jobs:
             --windowed \
             --name CASDbot \
             --icon paper-plane.ico
-            main.py
+            CASDbot.py
 
       - name: Publicar artefato
         uses: actions/upload-artifact@v4

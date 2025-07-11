@@ -1,181 +1,627 @@
 import os
 import time
-from tkinter import *
-from tkinter import filedialog
-from PIL import Image, ImageTk
+import logging
+import threading
+import re
+from typing import Optional, Dict, Any
+from dataclasses import dataclass
+from pathlib import Path
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException, WebDriverException
 import pandas as pd
 import urllib.parse
 
-# Classe da interface gráfica do CASDbot + comandos 
-class Application:
-    # Interface gráfica e associação com os comandos
-    def __init__(self, master=None):
+# Configuração de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('casdbot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class Config:
+    """Configurações da aplicação"""
+    WAIT_TIMEOUT: int = 60
+    SEND_DELAY: float = 1.5
+    POST_SEND_DELAY: float = 3.0
+    WINDOW_WIDTH: int = 700
+    WINDOW_HEIGHT: int = 500
+    PRIMARY_COLOR: str = '#3192b3'
+    ACCENT_COLOR: str = '#f9b342'
+    ACCENT_HOVER_COLOR: str = '#e6a23c'
+    ERROR_COLOR: str = '#ffe6e6'
+
+class ModernButton:
+    """Classe para criar botões modernos com bordas arredondadas e hover"""
+    
+    def __init__(self, parent, text, command, **kwargs):
+        self.parent = parent
+        self.text = text
+        self.command = command
+        self.config = Config()
         
-        # Interface Geral        
-        master.title("CASDbot v2024")
-        master.geometry("600x400")  # Aumentei a altura para garantir que os botões não fiquem cortados
-        master.configure(bg='#3192b3')  # Define cor de fundo
-        self.master = master
+        # Configurações padrão
+        self.bg_color = kwargs.get('bg', self.config.ACCENT_COLOR)
+        self.fg_color = kwargs.get('fg', 'white')
+        self.font = kwargs.get('font', ("Montserrat Bold", 12))
+        self.padx = kwargs.get('padx', 25)
+        self.pady = kwargs.get('pady', 12)
+        self.state = kwargs.get('state', 'normal')
+        
+        self.create_button()
+    
+    def create_button(self):
+        """Cria o botão moderno"""
+        # Frame principal do botão
+        self.button_frame = tk.Frame(
+            self.parent,
+            bg=self.bg_color,
+            relief="flat",
+            bd=0,
+            highlightthickness=0
+        )
+        
+        # Label do botão
+        self.button_label = tk.Label(
+            self.button_frame,
+            text=self.text,
+            font=self.font,
+            fg=self.fg_color,
+            bg=self.bg_color,
+            padx=self.padx,
+            pady=self.pady,
+            cursor="hand2"
+        )
+        self.button_label.pack()
+        
+        # Bindings para hover e clique
+        self.button_frame.bind("<Button-1>", self._on_click)
+        self.button_label.bind("<Button-1>", self._on_click)
+        
+        self.button_frame.bind("<Enter>", self._on_enter)
+        self.button_label.bind("<Enter>", self._on_enter)
+        
+        self.button_frame.bind("<Leave>", self._on_leave)
+        self.button_label.bind("<Leave>", self._on_leave)
+        
+        # Configurar estado inicial
+        if self.state == 'disabled':
+            self.disable()
+    
+    def _on_click(self, event):
+        """Handler para clique do botão"""
+        if self.state == 'normal' and self.command:
+            self.command()
+    
+    def _on_enter(self, event):
+        """Handler para hover enter"""
+        if self.state == 'normal':
+            self.button_frame.configure(bg=self.config.ACCENT_HOVER_COLOR)
+            self.button_label.configure(bg=self.config.ACCENT_HOVER_COLOR)
+    
+    def _on_leave(self, event):
+        """Handler para hover leave"""
+        if self.state == 'normal':
+            self.button_frame.configure(bg=self.bg_color)
+            self.button_label.configure(bg=self.bg_color)
+    
+    def pack(self, **kwargs):
+        """Pack do frame do botão"""
+        return self.button_frame.pack(**kwargs)
+    
+    def grid(self, **kwargs):
+        """Grid do frame do botão"""
+        return self.button_frame.grid(**kwargs)
+    
+    def configure(self, **kwargs):
+        """Configura propriedades do botão"""
+        if 'state' in kwargs:
+            self.state = kwargs['state']
+            if self.state == 'disabled':
+                self.disable()
+            else:
+                self.enable()
+        
+        if 'text' in kwargs:
+            self.button_label.configure(text=kwargs['text'])
+    
+    def disable(self):
+        """Desabilita o botão"""
+        self.state = 'disabled'
+        self.button_frame.configure(bg='#cccccc')
+        self.button_label.configure(bg='#cccccc', fg='#666666')
+    
+    def enable(self):
+        """Habilita o botão"""
+        self.state = 'normal'
+        self.button_frame.configure(bg=self.bg_color)
+        self.button_label.configure(bg=self.bg_color, fg=self.fg_color)
 
-        # Configura o layout da janela principal
-        self.master.columnconfigure(0, weight=1)  # Permite que a janela expanda horizontalmente de forma proporcional
-        self.master.rowconfigure(0, weight=1)     # Permite que a janela expanda verticalmente de forma proporcional
+class WhatsAppSender:
+    """Classe responsável pelo envio de mensagens via WhatsApp Web"""
+    
+    def __init__(self):
+        self.driver: Optional[webdriver.Chrome] = None
+        self.config = Config()
+        
+    def setup_driver(self) -> bool:
+        """Configura e inicializa o driver do Chrome"""
+        try:
+            chrome_options = Options()
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--disable-extensions")
+            chrome_options.add_argument("--disable-plugins")
+            chrome_options.add_argument("--disable-images")
+            chrome_options.add_argument("--disable-javascript")
+            chrome_options.add_argument("--disable-web-security")
+            chrome_options.add_argument("--allow-running-insecure-content")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            logger.info("Driver do Chrome inicializado com sucesso")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao inicializar driver: {e}")
+            return False
+    
+    def validate_phone_number(self, number: str) -> bool:
+        """Valida formato do número de telefone"""
+        # Remove caracteres não numéricos
+        clean_number = re.sub(r'[^\d]', '', str(number))
+        
+        # Verifica se tem entre 10 e 15 dígitos (incluindo código do país)
+        if len(clean_number) < 10 or len(clean_number) > 15:
+            return False
+            
+        return True
+    
+    def send_single_message(self, number: str, message: str) -> Dict[str, Any]:
+        """Envia uma única mensagem"""
+        result = {
+            'success': False,
+            'status': 'Erro desconhecido',
+            'error': None
+        }
+        
+        try:
+            # Valida número
+            if not self.validate_phone_number(number):
+                result['status'] = 'Número inválido'
+                return result
+            
+            # Limpa e codifica a mensagem
+            clean_message = str(message).strip()
+            if not clean_message:
+                result['status'] = 'Mensagem vazia'
+                return result
+                
+            # Codifica a mensagem para URL
+            message_test = message.replace("\n", "%0A")
+            print(message_test)
+            message_encoded = urllib.parse.quote(clean_message)
+            print(message_encoded)
+            print(number)
+            # Constrói URL
+            url = f"https://web.whatsapp.com/send?phone={number}&text={message_encoded}"
+            
+            # Navega para a página
+            self.driver.get(url)
+            
+            # Aguarda carregamento da página
+            wait = WebDriverWait(self.driver, self.config.WAIT_TIMEOUT)
+            send_button = wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//span[@data-icon='send']"))
+            )
+            
+            # Aguarda um pouco antes de clicar
+            time.sleep(self.config.SEND_DELAY)
+            
+            # Clica no botão enviar
+            send_button.click()
+            
+            # Aguarda após envio
+            time.sleep(self.config.POST_SEND_DELAY)
+            
+            result['success'] = True
+            result['status'] = 'Mensagem Enviada'
+            logger.info(f"Mensagem enviada com sucesso para {number}")
+            
+        except TimeoutException:
+            result['status'] = 'Timeout - Página não carregou'
+            result['error'] = 'TimeoutException'
+            logger.warning(f"Timeout ao enviar mensagem para {number}")
+            
+        except WebDriverException as e:
+            result['status'] = f'Erro do navegador: {str(e)[:50]}'
+            result['error'] = 'WebDriverException'
+            logger.error(f"Erro do WebDriver para {number}: {e}")
+            
+        except Exception as e:
+            result['status'] = f'Erro inesperado: {str(e)[:50]}'
+            result['error'] = type(e).__name__
+            logger.error(f"Erro inesperado ao enviar para {number}: {e}")
+            
+        return result
+    
+    def close_driver(self):
+        """Fecha o driver de forma segura"""
+        if self.driver:
+            try:
+                self.driver.quit()
+                logger.info("Driver fechado com sucesso")
+            except Exception as e:
+                logger.error(f"Erro ao fechar driver: {e}")
+            finally:
+                self.driver = None
 
-        # Adicionando widgets para a interface
-        self.widget1 = Frame(master, bg="#3192b3")
-        self.widget1.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)  # Centraliza o conteúdo
-        self.widget1.grid_columnconfigure(0, weight=1)
+class ExcelHandler:
+    """Classe responsável pelo manuseio de arquivos Excel"""
+    
+    @staticmethod
+    def load_excel(filepath: str) -> Optional[pd.DataFrame]:
+        """Carrega arquivo Excel com validações"""
+        try:
+            df = pd.read_excel(filepath, engine='openpyxl')
+            
+            # Verifica colunas obrigatórias
+            required_columns = ["Número", "Mensagem"]
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                raise ValueError(f"Colunas obrigatórias não encontradas: {', '.join(missing_columns)}")
+            
+            # Inicializa coluna Status se não existir
+            if 'Status' not in df.columns:
+                df['Status'] = ""
+            
+            # Converte Status para object para permitir strings
+            df['Status'] = df['Status'].astype(object)
+            
+            # Remove linhas vazias
+            df = df.dropna(subset=['Número', 'Mensagem'])
+            
+            logger.info(f"Arquivo carregado com sucesso: {len(df)} linhas válidas")
+            return df
+            
+        except FileNotFoundError:
+            logger.error(f"Arquivo não encontrado: {filepath}")
+            raise
+        except ValueError as e:
+            logger.error(f"Erro de validação: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Erro ao carregar arquivo: {e}")
+            raise
+    
+    @staticmethod
+    def save_excel(df: pd.DataFrame, filepath: str) -> bool:
+        """Salva DataFrame em arquivo Excel"""
+        try:
+            df.to_excel(filepath, index=False, engine="openpyxl")
+            logger.info(f"Arquivo salvo com sucesso: {filepath}")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao salvar arquivo: {e}")
+            return False
 
-        self.text1 = Label(self.widget1, text="CASDbot", anchor=CENTER, font=("MontSerrat Bold", 18), fg="white", bg="#3192b3")
-        self.text1.grid(row=0, column=0, pady=(10, 5))  # Espaçamento ajustado
+class ProgressDialog:
+    """Dialog de progresso para operações longas"""
+    
+    def __init__(self, parent, title="Processando..."):
+        self.parent = parent
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title(title)
+        self.dialog.geometry("400x150")
+        self.dialog.configure(bg=Config.PRIMARY_COLOR)
+        
+        # Centraliza o dialog
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        self.center_dialog()
+        
+        # Widgets
+        self.label = tk.Label(
+            self.dialog, 
+            text="Iniciando...", 
+            font=("Arial", 12),
+            bg=Config.PRIMARY_COLOR,
+            fg="white"
+        )
+        self.label.pack(pady=20)
+        
+        self.progress = ttk.Progressbar(
+            self.dialog, 
+            mode='indeterminate',
+            length=300
+        )
+        self.progress.pack(pady=10)
+        self.progress.start()
+        
+        self.cancel_button = ModernButton(
+            self.dialog,
+            text="Cancelar",
+            command=self.cancel,
+            font=("Arial", 10, "bold"),
+            padx=20,
+            pady=8
+        )
+        self.cancel_button.pack(pady=10)
+        
+        self.cancelled = False
+        
+    def center_dialog(self):
+        """Centraliza o dialog na tela"""
+        self.dialog.update_idletasks()
+        x = (self.parent.winfo_screenwidth() - self.dialog.winfo_reqwidth()) // 2
+        y = (self.parent.winfo_screenheight() - self.dialog.winfo_reqheight()) // 2
+        self.dialog.geometry(f"+{x}+{y}")
+    
+    def update_text(self, text: str):
+        """Atualiza o texto do dialog"""
+        self.label.config(text=text)
+        self.dialog.update()
+    
+    def cancel(self):
+        """Cancela a operação"""
+        self.cancelled = True
+        self.dialog.destroy()
+    
+    def close(self):
+        """Fecha o dialog"""
+        self.dialog.destroy()
+    
 
-        self.text2 = Label(self.widget1, text="Leia o tutorial antes de utilizar!", anchor=CENTER, font=("MontSerrat", 14), fg="white", bg="#3192b3")
-        self.text2.grid(row=1, column=0, pady=(5, 20))  # Espaçamento ajustado
-
-        # Botão de selecionar arquivo
-        self.button_file = Button(self.widget1, text="Escolher Arquivo", font=("Montserrat Bold", 10), command=self.select_file, fg="white", bg="#f9b342")
-        self.button_file.grid(row=2, column=0, pady=(5, 10))  # Botão posicionado de forma relativa, com espaçamento
-
-        # Botão de enviar mensagens
-        self.button_message = Button(self.widget1, text="Enviar Mensagens", font=("Montserrat Bold", 10), command=self.send_message, fg="white", bg="#f9b342")
-        self.button_message.grid(row=3, column=0, pady=(5, 10))  # Garantido que o botão esteja totalmente visível
-
-        # Botão de status será adicionado dinamicamente após o envio de mensagens
-        self.widget_export = None
-        self.button_export = None
-
-        # Rodapé (informações de contato)
-        self.widget2 = Frame(master, bg="#3192b3")
-        self.widget2.grid(row=5, column=0, sticky="nsew", pady=(50, 10))  # Ajustando posição
-        self.widget2.grid_columnconfigure(0, weight=1)
-
-        self.text3 = Label(self.widget2, text="Qualquer dúvida, contate o Fóton - T26 - (85) 98413-2943", anchor=CENTER, font=("MontSerrat Bold", 8), fg="white", bg="#3192b3")
-        self.text3.grid(row=0, column=0)
-
-        self.df = None
-
-    # Função de mensagem de erro personalizada
-    def custom_error_message(self, title, message):
-        error_window = Toplevel(self.master)
-        error_window.title(title)
-        error_window.geometry("400x200")  # Aumentei o tamanho para caber mais texto
-        error_window.configure(bg='#ffe6e6')  # Fundo claro para destacar o erro
-
-        # Centralizar a janela de erro na tela
-        error_window.update_idletasks()
-        x = (self.master.winfo_screenwidth() - error_window.winfo_reqwidth()) // 2
-        y = (self.master.winfo_screenheight() - error_window.winfo_reqheight()) // 2
-        error_window.geometry(f"+{x}+{y}")  # Define a posição da janela no centro da tela
-
-        label_title = Label(error_window, text=title, font=("Arial Bold", 16), fg="red", bg='#ffe6e6')
-        label_title.pack(pady=10)
-
-        # O 'wraplength' quebra o texto automaticamente em múltiplas linhas se necessário
-        label_message = Label(error_window, text=message, font=("Arial", 12), bg='#ffe6e6', wraplength=350)
-        label_message.pack(pady=5)
-
-        button_close = Button(error_window, text="Fechar", command=error_window.destroy, font=("Arial", 10, "bold"), bg="#ff3333", fg="white")
-        button_close.pack(pady=10)
-
-        error_window.transient(self.master)
-        error_window.grab_set()
-        self.master.wait_window(error_window)
-
-    # Função para adicionar botão de status na interface (aparece apenas após envio de mensagens)
-    def button_status(self):
-        if not self.button_export:
-            self.widget_export = Frame(self.master, bg="#3192b3")
-            self.widget_export.grid(row=4, column=0, pady=(10, 20))  # Posicionado logo abaixo do botão de enviar mensagens
-            self.widget_export.grid_columnconfigure(0, weight=1)
-            self.button_export = Button(self.widget_export, text="Ver Status das Mensagens", font=("Montserrat Bold", 10), command=self.export_file, fg="white", bg="#f9b342")
-            self.button_export.grid(row=0, column=0, pady=10)
-
-    # Função para selecionar arquivo
+class CASDbotGUI:
+    
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.config = Config()
+        self.whatsapp_sender = WhatsAppSender()
+        self.df: Optional[pd.DataFrame] = None
+        self.progress_dialog: Optional[ProgressDialog] = None
+        
+        self.setup_gui()
+        
+    def setup_gui(self):
+        self.root.title("CASDbot v2025")
+        self.root.geometry(f"{self.config.WINDOW_WIDTH}x{self.config.WINDOW_HEIGHT}")
+        self.root.configure(bg=self.config.PRIMARY_COLOR)
+        self.root.resizable(True, True)
+        
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        
+        main_frame = tk.Frame(self.root, bg=self.config.PRIMARY_COLOR)
+        main_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        main_frame.columnconfigure(0, weight=1)
+        
+        title_label = tk.Label(
+            main_frame,
+            text="CASDbot",
+            font=("Montserrat Bold", 24),
+            fg="white",
+            bg=self.config.PRIMARY_COLOR
+        )
+        title_label.grid(row=0, column=0, pady=(10, 5))
+        
+        subtitle_label = tk.Label(
+            main_frame,
+            text="Um script simples para enviar mensagens em massa no WhatsApp. Por favor, leia o tutorial antes de usar",
+            font=("Montserrat", 12),
+            fg="white",
+            bg=self.config.PRIMARY_COLOR,
+            wraplength=self.config.WINDOW_WIDTH - 60, 
+            justify="center"
+        )
+        subtitle_label.grid(row=1, column=0, pady=(5, 10), sticky="ew")
+        main_frame.grid_columnconfigure(0, weight=1)
+        
+        button_frame = tk.Frame(main_frame, bg=self.config.PRIMARY_COLOR)
+        button_frame.grid(row=2, column=0, pady=20)
+        
+        self.select_file_btn = ModernButton(
+            button_frame,
+            text="📁 Escolher Arquivo Excel",
+            command=self.select_file,
+            font=("Montserrat Bold", 12),
+            padx=25,
+            pady=12
+        )
+        self.select_file_btn.pack(pady=8)
+        
+        self.send_messages_btn = ModernButton(
+            button_frame,
+            text="📤 Enviar Mensagens",
+            command=self.send_messages,
+            font=("Montserrat Bold", 12),
+            padx=25,
+            pady=12,
+            state="disabled"
+        )
+        self.send_messages_btn.pack(pady=8)
+        
+        self.export_btn = ModernButton(
+            button_frame,
+            text="💾 Exportar Status",
+            command=self.export_file,
+            font=("Montserrat Bold", 12),
+            padx=25,
+            pady=12,
+            state="disabled"
+        )
+        self.export_btn.pack(pady=8)
+        
+        status_frame = tk.Frame(main_frame, bg=self.config.PRIMARY_COLOR)
+        status_frame.grid(row=3, column=0, pady=20, sticky="ew")
+        status_frame.columnconfigure(0, weight=1)
+        
+        self.status_label = tk.Label(
+            status_frame,
+            text="Nenhum arquivo selecionado",
+            font=("Montserrat", 10),
+            fg="white",
+            bg=self.config.PRIMARY_COLOR
+        )
+        self.status_label.grid(row=0, column=0)
+                
+        footer_frame = tk.Frame(self.root, bg=self.config.PRIMARY_COLOR)
+        footer_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        footer_frame.columnconfigure(0, weight=1)
+        
+        footer_label = tk.Label(
+            footer_frame,
+            text="Qualquer dúvida, contate o Fóton - T26 - (85) 98413-2943",
+            font=("Montserrat Bold", 9),
+            fg="white",
+            bg=self.config.PRIMARY_COLOR
+        )
+        footer_label.grid(row=0, column=0)
+        
     def select_file(self):
-        filepath = filedialog.askopenfilename(title="Escolha o arquivo padronizado", filetypes=[("Arquivos Excel", "*xlsx")])
+        filepath = filedialog.askopenfilename(
+            title="Escolha o arquivo Excel",
+            filetypes=[("Arquivos Excel", "*.xlsx"), ("Todos os arquivos", "*.*")]
+        )
+        
         if filepath:
             try:
-                self.df = pd.read_excel(filepath, engine='openpyxl')
-                if 'Status' not in self.df.columns:
-                    self.df['Status'] = ""  # Inicializa a coluna 'Status' com strings vazias
-
-                required_columns = ["Número", "Mensagem"]
-                for col in required_columns:
-                    if col not in self.df.columns:
-                        raise ValueError(f"Coluna '{col}' não encontrada no arquivo Excel.")
-
-                self.df['Status'] = self.df['Status'].astype(object)  # Converte para tipo object
-
-            except FileNotFoundError as e:
-                self.custom_error_message("Erro", f"Erro ao abrir o arquivo: {e}")
-            except ValueError as e:
-                self.custom_error_message("Erro", str(e))
-        else:
-            self.custom_error_message("Erro", "Nenhum arquivo foi selecionado")
-
-    # Função para enviar as mensagens
-    def send_message(self):
-        if self.df is not None:
-            total_contacts = range(self.df.shape[0])
-            error = 0
-            self.driver = webdriver.Chrome()
-            for i in total_contacts:
-                number = self.df.at[i, 'Número']
-                message = self.df.at[i, 'Mensagem']
-                message = message.replace("\n", "%0A")
-                # Codificar a mensagem corretamente para ser usada na URL
-                message_encoded = urllib.parse.quote(message)
-
-                try:
-                    url = f"https://web.whatsapp.com/send?phone={number}&text={message}"
-                    self.driver.get(url)
-
-                    WebDriverWait(self.driver, 60).until(EC.presence_of_element_located((By.XPATH, "//span[@data-icon='send']")))
-                    time.sleep(1.5)
-                    send_button = self.driver.find_element(By.XPATH, "//span[@data-icon='send']")
-                    send_button.click()    
-                    time.sleep(3)                            
-                    self.df.at[i, 'Status'] = 'Mensagem Enviada'                    
-                except Exception:
-                    self.df.at[i, 'Status'] = 'Erro ao enviar'
-                    error = 1
-
-            # Fecha o navegador após o envio das mensagens
-            self.driver.quit()
-            # Mostra o botão de status após o envio
-            self.button_status()
-            if error == 0:
-                self.custom_error_message("Sucesso", "Envio das mensagens concluído!")
-            else:
-                self.custom_error_message("Erro", "Envio concluído, mas ocorreram alguns erros. Verifique a coluna Status.")
-            
-        
-        else:
-            self.custom_error_message("Erro", "Você não anexou o arquivo corretamente")
+                self.df = ExcelHandler.load_excel(filepath)
+                self.status_label.config(text=f"Arquivo carregado: {Path(filepath).name} ({len(self.df)} mensagens)")
+                self.send_messages_btn.enable()
+                self.export_btn.enable()
+                messagebox.showinfo("Sucesso", f"Arquivo carregado com sucesso!\n{len(self.df)} mensagens encontradas.")
+                
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao carregar arquivo:\n{str(e)}")
+                logger.error(f"Erro ao selecionar arquivo: {e}")
+    
+    def send_messages(self):
+        if self.df is None:
+            messagebox.showerror("Erro", "Nenhum arquivo carregado!")
             return
         
-
-    # Função para exportar o arquivo atualizado
-    def export_file(self):
-        if self.df is not None:
-            save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")], title="Salvar como")
-            if save_path:
-                try:
-                    self.df.to_excel(save_path, index=False, engine="openpyxl")
-                    self.custom_error_message("Sucesso", "Arquivo salvo com sucesso")
-                except Exception as e:
-                    self.custom_error_message("Erro", f"Erro ao salvar arquivo: {e}")
+        self.send_messages_btn.disable()
+        self.select_file_btn.disable()
+        
+        thread = threading.Thread(target=self._send_messages_thread)
+        thread.daemon = True
+        thread.start()
+    
+    def _send_messages_thread(self):
+        """Thread para envio de mensagens"""
+        try:
+            # Cria dialog de progresso
+            self.progress_dialog = ProgressDialog(self.root, "Enviando Mensagens...")
+            
+            # Inicializa driver
+            if not self.whatsapp_sender.setup_driver():
+                raise Exception("Falha ao inicializar navegador")
+            
+            total_messages = len(self.df)
+            success_count = 0
+            error_count = 0
+            current_message = 0
+            
+            for index, row in self.df.iterrows():
+                if self.progress_dialog.cancelled:
+                    break
+                
+                current_message += 1
+                
+                progress_text = f"Enviando mensagem {current_message} de {total_messages}..."
+                self.progress_dialog.update_text(progress_text)
+                
+                result = self.whatsapp_sender.send_single_message(
+                    str(row['Número']), 
+                    str(row['Mensagem']),                    
+                )
+                
+                self.df.at[index, 'Status'] = result['status']
+                
+                if result['success']:
+                    success_count += 1
+                else:
+                    error_count += 1
+            
+            self.whatsapp_sender.close_driver()
+            
+            if self.progress_dialog:
+                self.progress_dialog.close()
+            
+            self._show_send_result(success_count, error_count, total_messages)
+            
+        except Exception as e:
+            logger.error(f"Erro durante envio: {e}")
+            self.whatsapp_sender.close_driver()
+            
+            if self.progress_dialog:
+                self.progress_dialog.close()
+            
+            messagebox.showerror("Erro", f"Erro durante envio:\n{str(e)}")
+            
+        finally:
+            self.root.after(0, self._reenable_buttons)
+    
+    def _show_send_result(self, success_count: int, error_count: int, total_count: int):
+        message = f"Envio concluído!\n\n"
+        message += f"Total de mensagens: {total_count}\n"
+        message += f"Enviadas com sucesso: {success_count}\n"
+        message += f"Erros: {error_count}"
+        
+        if error_count > 0:
+            messagebox.showwarning("Envio Concluído", message)
         else:
-            self.custom_error_message("Erro", "Nenhum status disponível para exportar")
+            messagebox.showinfo("Sucesso", message)
+    
+    def _reenable_buttons(self):
+        self.send_messages_btn.enable()
+        self.select_file_btn.enable()
+    
+    def export_file(self):
+        if self.df is None:
+            messagebox.showerror("Erro", "Nenhum arquivo carregado!")
+            return
+        
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="Salvar arquivo com status"
+        )
+        
+        if filepath:
+            if ExcelHandler.save_excel(self.df, filepath):
+                messagebox.showinfo("Sucesso", "Arquivo salvo com sucesso!")
+            else:
+                messagebox.showerror("Erro", "Erro ao salvar arquivo!")
+    
 
+def main():
 
-root = Tk() 
-Application(root)
-root.mainloop()
+    try:
+        root = tk.Tk()
+        app = CASDbotGUI(root)
+        root.mainloop()
+    except Exception as e:
+        logger.error(f"Erro na aplicação principal: {e}")
+        messagebox.showerror("Erro Fatal", f"Erro na aplicação:\n{str(e)}")
 
-
+if __name__ == "__main__":
+    main() 

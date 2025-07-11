@@ -14,12 +14,7 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-
-      - name: Instalar dependências
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python-version: '3.12.1'
 
       - name: Instalar PyInstaller
         run: pip install pyinstaller
@@ -30,6 +25,7 @@ jobs:
             --onefile \
             --windowed \
             --name CASDbot \
+            --icon paper-plane.ico
             main.py
 
       - name: Publicar artefato

@@ -1,5 +1,6 @@
 name: Build macOS Executável
 
+# Aciona manualmente via "Run workflow" na aba Actions
 on:
   workflow_dispatch:
 
@@ -20,21 +21,25 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          
+
       - name: Instalar PyInstaller
         run: pip install pyinstaller
-      
+
       - name: Gerar executável
         run: |
-          pyinstaller \
-            --onefile \
-            --windowed \
-            --name CASDbot \
-            --icon paper-plane.ico \
-            CASDbot.py
+          pyinstaller --onefile \
+                      --windowed \
+                      --name CASDbot \
+                      --icon paper-plane.ico \
+                      CASDbot.py
 
-      - name: Publicar artefato
+      - name: Empacotar em tar.gz
+        run: |
+          cd dist
+          tar czvf casdbot-macos.tar.gz CASDbot
+
+      - name: Publicar artefato tarball
         uses: actions/upload-artifact@v4
         with:
           name: casdbot-macos
-          path: dist/CASDbot
+          path: dist/casdbot-macos.tar.gz

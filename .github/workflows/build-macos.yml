@@ -29,7 +29,7 @@ jobs:
             main.py
 
       - name: Publicar artefato
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: casdbot-macos
           path: dist/CASDbot

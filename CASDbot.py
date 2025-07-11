@@ -19,7 +19,6 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 import pandas as pd
 import urllib.parse
 
-# Configuração de logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -52,7 +51,6 @@ class ModernButton:
         self.command = command
         self.config = Config()
         
-        # Configurações padrão
         self.bg_color = kwargs.get('bg', self.config.ACCENT_COLOR)
         self.fg_color = kwargs.get('fg', 'white')
         self.font = kwargs.get('font', ("Montserrat Bold", 12))
@@ -64,7 +62,6 @@ class ModernButton:
     
     def create_button(self):
         """Cria o botão moderno"""
-        # Frame principal do botão
         self.button_frame = tk.Frame(
             self.parent,
             bg=self.bg_color,
@@ -73,7 +70,6 @@ class ModernButton:
             highlightthickness=0
         )
         
-        # Label do botão
         self.button_label = tk.Label(
             self.button_frame,
             text=self.text,
@@ -86,7 +82,6 @@ class ModernButton:
         )
         self.button_label.pack()
         
-        # Bindings para hover e clique
         self.button_frame.bind("<Button-1>", self._on_click)
         self.button_label.bind("<Button-1>", self._on_click)
         
@@ -96,7 +91,6 @@ class ModernButton:
         self.button_frame.bind("<Leave>", self._on_leave)
         self.button_label.bind("<Leave>", self._on_leave)
         
-        # Configurar estado inicial
         if self.state == 'disabled':
             self.disable()
     
@@ -184,81 +178,80 @@ class WhatsAppSender:
     
     def validate_phone_number(self, number: str) -> bool:
         """Valida formato do número de telefone"""
-        # Remove caracteres não numéricos
         clean_number = re.sub(r'[^\d]', '', str(number))
         
-        # Verifica se tem entre 10 e 15 dígitos (incluindo código do país)
         if len(clean_number) < 10 or len(clean_number) > 15:
             return False
             
         return True
     
     def send_single_message(self, number: str, message: str) -> Dict[str, Any]:
-        """Envia uma única mensagem"""
         result = {
             'success': False,
             'status': 'Erro desconhecido',
             'error': None
         }
-        
+
+        clean_number = re.sub(r'\D', '', str(number))
+        if not self.validate_phone_number(clean_number):
+            result['status'] = 'Número inválido'
+            return result
+
+        clean_message = str(message).strip()
+        if not clean_message:
+            result['status'] = 'Mensagem vazia'
+            return result
+
+        message_encoded = urllib.parse.quote(clean_message)
+        url = f"https://web.whatsapp.com/send?phone={clean_number}&text={message_encoded}"
+
         try:
-            # Valida número
-            if not self.validate_phone_number(number):
-                result['status'] = 'Número inválido'
-                return result
-            
-            # Limpa e codifica a mensagem
-            clean_message = str(message).strip()
-            if not clean_message:
-                result['status'] = 'Mensagem vazia'
-                return result
-                
-            # Codifica a mensagem para URL
-            message_test = message.replace("\n", "%0A")
-            print(message_test)
-            message_encoded = urllib.parse.quote(clean_message)
-            print(message_encoded)
-            print(number)
-            # Constrói URL
-            url = f"https://web.whatsapp.com/send?phone={number}&text={message_encoded}"
-            
-            # Navega para a página
             self.driver.get(url)
-            
-            # Aguarda carregamento da página
             wait = WebDriverWait(self.driver, self.config.WAIT_TIMEOUT)
-            send_button = wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//span[@data-icon='send']"))
-            )
-            
-            # Aguarda um pouco antes de clicar
-            time.sleep(self.config.SEND_DELAY)
-            
-            # Clica no botão enviar
-            send_button.click()
-            
-            # Aguarda após envio
+
+            send_button = None
+            for xpath in ("//span[@data-icon='send']", "//button[@aria-label='Enviar']"):
+                try:
+                    send_button = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                    break
+                except TimeoutException:
+                    continue
+            if not send_button:
+                raise Exception("Botão de enviar não encontrado")
+
+            try:
+                send_button.click()
+            except:
+                self.driver.execute_script("arguments[0].click();", send_button)
+
+            try:
+                input_box = wait.until(EC.presence_of_element_located((
+                    By.XPATH,
+                    "//div[@contenteditable='true']"
+                )))
+                input_box.send_keys(Keys.ENTER)
+            except:
+                pass
+
             time.sleep(self.config.POST_SEND_DELAY)
-            
-            result['success'] = True
-            result['status'] = 'Mensagem Enviada'
-            logger.info(f"Mensagem enviada com sucesso para {number}")
-            
+
         except TimeoutException:
-            result['status'] = 'Timeout - Página não carregou'
-            result['error'] = 'TimeoutException'
-            logger.warning(f"Timeout ao enviar mensagem para {number}")
-            
+            result['status'] = 'Timeout - página não carregou'
+            result['error']  = 'TimeoutException'
+            return result
+
         except WebDriverException as e:
-            result['status'] = f'Erro do navegador: {str(e)[:50]}'
-            result['error'] = 'WebDriverException'
-            logger.error(f"Erro do WebDriver para {number}: {e}")
-            
+            result['status'] = f'Erro WebDriver: {e.msg[:50]}'
+            result['error']  = 'WebDriverException'
+            return result
+
         except Exception as e:
-            result['status'] = f'Erro inesperado: {str(e)[:50]}'
-            result['error'] = type(e).__name__
-            logger.error(f"Erro inesperado ao enviar para {number}: {e}")
-            
+            result['status'] = str(e)
+            result['error']  = type(e).__name__
+            return result
+
+        result['success'] = True
+        result['status']  = 'Mensagem Enviada'
         return result
     
     def close_driver(self):
@@ -281,21 +274,17 @@ class ExcelHandler:
         try:
             df = pd.read_excel(filepath, engine='openpyxl')
             
-            # Verifica colunas obrigatórias
             required_columns = ["Número", "Mensagem"]
             missing_columns = [col for col in required_columns if col not in df.columns]
             
             if missing_columns:
                 raise ValueError(f"Colunas obrigatórias não encontradas: {', '.join(missing_columns)}")
             
-            # Inicializa coluna Status se não existir
             if 'Status' not in df.columns:
                 df['Status'] = ""
             
-            # Converte Status para object para permitir strings
             df['Status'] = df['Status'].astype(object)
             
-            # Remove linhas vazias
             df = df.dropna(subset=['Número', 'Mensagem'])
             
             logger.info(f"Arquivo carregado com sucesso: {len(df)} linhas válidas")
@@ -332,12 +321,10 @@ class ProgressDialog:
         self.dialog.geometry("400x150")
         self.dialog.configure(bg=Config.PRIMARY_COLOR)
         
-        # Centraliza o dialog
         self.dialog.transient(parent)
         self.dialog.grab_set()
         self.center_dialog()
         
-        # Widgets
         self.label = tk.Label(
             self.dialog, 
             text="Iniciando...", 
@@ -528,10 +515,8 @@ class CASDbotGUI:
     def _send_messages_thread(self):
         """Thread para envio de mensagens"""
         try:
-            # Cria dialog de progresso
             self.progress_dialog = ProgressDialog(self.root, "Enviando Mensagens...")
             
-            # Inicializa driver
             if not self.whatsapp_sender.setup_driver():
                 raise Exception("Falha ao inicializar navegador")
             

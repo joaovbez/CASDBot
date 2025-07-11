@@ -1,0 +1,39 @@
+name: Build macOS Executável
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checar código
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Instalar PyInstaller
+        run: pip install pyinstaller
+
+      - name: Gerar executável
+        run: |
+          pyinstaller \
+            --onefile \
+            --windowed \
+            --name CASDbot \
+            main.py
+
+      - name: Publicar artefato
+        uses: actions/upload-artifact@v3
+        with:
+          name: casdbot-macos
+          path: dist/CASDbot

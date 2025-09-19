@@ -30,11 +30,13 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # >>> AQUI trocamos ^ por `  (backtick) ou 1 linha só
       - name: Build EXE (GUI)
+        shell: pwsh
         run: |
-          pyinstaller --onefile --windowed ^
-            --name CASDbot ^
-            --icon paper-plane.ico ^
+          pyinstaller --onefile --windowed `
+            --name CASDbot `
+            --icon paper-plane.ico `
             CASDbot.py
 
       - name: Zip artifact

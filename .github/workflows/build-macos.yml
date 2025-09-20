@@ -1,6 +1,5 @@
-name: Build macOS Executável
+name: Build macOS Executable
 
-# Aciona manualmente via "Run workflow" na aba Actions
 on:
   workflow_dispatch:
 
@@ -9,37 +8,53 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checar código
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Configurar Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12.1'
+          python-version: "3.11"
 
-      - name: Instalar dependências
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install deps
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pyinstaller
 
-      - name: Instalar PyInstaller
-        run: pip install pyinstaller
-
-      - name: Gerar executável
+      - name: Build .app (GUI)
         run: |
-          pyinstaller --onefile \
-                      --windowed \
-                      --name CASDbot \
-                      --icon paper-plane.ico \
-                      CASDbot.py
+          pyinstaller \
+            --windowed \
+            --onefile \
+            --name CASDbot \
+            --icon paper-plane.ico \
+            CASDbot.py
+          # Resultado principal: dist/CASDbot.app
 
-      - name: Empacotar em tar.gz
+      - name: Fix permissions & pack .app (zip)
         run: |
-          cd dist
-          tar czvf casdbot-macos.tar.gz CASDbot
+          chmod +x "dist/CASDbot.app/Contents/MacOS/CASDbot"
+          cd dist && zip -r casdbot-macos-app.zip "CASDbot.app"
 
-      - name: Publicar artefato tarball
+      - name: Also pack CLI binary inside .app (tar.gz)
+        run: |
+          # Binário que vive dentro do app (útil para rodar via terminal)
+          cd "dist/CASDbot.app/Contents/MacOS"
+          tar -czf "../../../../casdbot-macos-bin.tar.gz" CASDbot
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: casdbot-macos
-          path: dist/casdbot-macos.tar.gz
+          path: |
+            dist/casdbot-macos-app.zip
+            casdbot-macos-bin.tar.gz

@@ -15,6 +15,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException, WebDriverException
 import pandas as pd
 import urllib.parse
@@ -200,15 +201,12 @@ class WhatsAppSender:
 
             # espera curta para o botão de enviar
             wait_short = WebDriverWait(self.driver, 10)
-            xpath = "//*[@id='main']/footer/div[1]/div/span/div/div[2]/div/div[4]/button/span | //*[@id='main']/footer/div[1]/div/span/div/div[2]/div[2]/button/span"
-            send_button = wait_short.until(
-                EC.element_to_be_clickable((By.XPATH, xpath))
-            )
-            # clique principal + fallback em JS
-            try:
-                send_button.click()
-            except:
-                self.driver.execute_script("arguments[0].click();", send_button)
+            composer = wait_short.until(EC.presence_of_element_located((
+                                        By.XPATH,
+                                        "//footer//div[@contenteditable='true' and @data-tab='10']"
+                                )))
+            self.driver.execute_script("arguments[0].focus()", composer)
+            composer.send_keys(Keys.ENTER)
 
             time.sleep(self.config.POST_SEND_DELAY)
 

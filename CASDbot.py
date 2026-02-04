@@ -200,13 +200,55 @@ class WhatsAppSender:
             self.driver.get(url)
 
             # espera curta para o botão de enviar
-            wait_short = WebDriverWait(self.driver, 10)
-            composer = wait_short.until(EC.presence_of_element_located((
-                                        By.XPATH,
-                                        "//footer//div[@contenteditable='true' and @data-tab='10']"
-                                )))
-            self.driver.execute_script("arguments[0].focus()", composer)
-            composer.send_keys(Keys.ENTER)
+            wait = WebDriverWait(self.driver, 15)
+
+            sent = False
+
+            # 1) Tenta focar o COMPOSER (campo de digitação) no rodapé e mandar ENTER
+            try:
+                composer = wait.until(EC.element_to_be_clickable((
+                    By.XPATH,
+                    # só procura dentro do footer da conversa, evitando a caixa de busca
+                    "//footer//div[@contenteditable='true' and @role='textbox']"
+                )))
+                # garante foco real no campo de escrita
+                self.driver.execute_script("arguments[0].focus();", composer)
+                time.sleep(0.2)
+                composer.send_keys(Keys.ENTER)
+                sent = True
+            except TimeoutException:
+                pass
+
+            # 2) Se ainda não enviou, clica no botão de enviar do rodapé (PT/EN)
+            if not sent:
+                try:
+                    send_btn = wait.until(EC.element_to_be_clickable((
+                        By.XPATH,
+                        "//footer//button[@aria-label='Enviar' or @aria-label='Send' or @title='Send']"
+                    )))
+                    try:
+                        send_btn.click()
+                    except Exception:
+                        self.driver.execute_script("arguments[0].click();", send_btn)
+                    sent = True
+                except TimeoutException:
+                    # fallback extra: ícone de 'send'
+                    try:
+                        icon_btn = wait.until(EC.element_to_be_clickable((
+                            By.XPATH,
+                            "//footer//*[@data-icon='send']/ancestor::button[1]"
+                        )))
+                        try:
+                            icon_btn.click()
+                        except Exception:
+                            self.driver.execute_script("arguments[0].click();", icon_btn)
+                        sent = True
+                    except TimeoutException:
+                        pass
+
+            if not sent:
+                raise TimeoutException("Composer/botão de enviar não disponível")
+
 
             time.sleep(self.config.POST_SEND_DELAY)
 
